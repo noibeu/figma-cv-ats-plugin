@@ -1,0 +1,19 @@
+{
+  "name": "figma-cv-ats-export",
+  "version": "1.0.0",
+  "description": "Plugin Figma pour exporter des CV en PDF ATS-compliant",
+  "main": "code.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.90.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}
