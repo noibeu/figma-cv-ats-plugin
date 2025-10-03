@@ -1,5 +1,5 @@
-// Plugin Figma pour exporter un CV en PDF ATS-compliant
-// Stratégie hybride : Image PNG (rendu visuel exact) + Texte invisible (lisible par ATS)
+// Figma plugin to export CV designs to ATS-compliant PDF
+// Hybrid strategy: PNG image (exact visual rendering) + Structured text (ATS-readable)
 
 interface ExportData {
   pngBytes: Uint8Array;
@@ -18,78 +18,78 @@ interface TextBlock {
   fontWeight: string;
   fontStyle: string;
   color: { r: number; g: number; b: number; a: number };
-  sectionType?: string; // Type de section détecté
-  isTitle?: boolean; // Est-ce un titre de section ?
+  sectionType?: string; // Detected section type
+  isTitle?: boolean; // Is it a section title?
 }
 
-// Afficher l'interface utilisateur
+// Show the user interface
 figma.showUI(__html__, { width: 320, height: 180 });
 
-// Écouter les messages de l'UI
+// Listen to UI messages
 figma.ui.onmessage = async (msg) => {
   if (msg.type === 'export-ats-pdf') {
     try {
-      // Récupérer la sélection
+      // Get the selection
       const selection = figma.currentPage.selection;
 
       if (selection.length === 0) {
-        figma.notify('⚠️ Veuillez sélectionner une Frame');
+        figma.notify('⚠️ Please select a Frame');
         return;
       }
 
-      // Prendre le premier élément sélectionné
+      // Take the first selected element
       const node = selection[0];
 
-      // Vérifier que c'est un node exportable (Frame, Component, etc.)
+      // Check if it's an exportable node (Frame, Component, etc.)
       if (!('exportAsync' in node)) {
-        figma.notify('❌ Ce type de node ne peut pas être exporté');
+        figma.notify('❌ This node type cannot be exported');
         return;
       }
 
-      figma.notify('🔄 Export en cours...');
+      figma.notify('🔄 Exporting...');
 
-      // 1. Exporter la Frame en image PNG haute résolution (2x)
+      // 1. Export the Frame as high-resolution PNG image (2x)
       const pngBytes = await node.exportAsync({
         format: 'PNG',
         constraint: { type: 'SCALE', value: 2 }
       });
 
-      // 2. Extraire les textes pour l'ATS
+      // 2. Extract text blocks for ATS
       const textBlocks = await extractTextBlocks([node]);
 
-      // 3. Envoyer tout à l'UI pour générer le PDF
+      // 3. Send everything to UI to generate PDF
       figma.ui.postMessage({
         type: 'generate-pdf',
         data: {
-          pngBytes: Array.from(pngBytes), // Convertir Uint8Array en Array pour le postMessage
+          pngBytes: Array.from(pngBytes), // Convert Uint8Array to Array for postMessage
           frameWidth: node.width,
           frameHeight: node.height,
           textBlocks: textBlocks
         }
       });
 
-      figma.notify(`✅ Frame exportée (${textBlocks.length} textes extraits)`);
+      figma.notify(`✅ Frame exported (${textBlocks.length} texts extracted)`);
     } catch (error) {
-      console.error('Erreur lors de l\'export:', error);
-      figma.notify('❌ Erreur lors de l\'export');
+      console.error('Export error:', error);
+      figma.notify('❌ Export error');
     }
   }
 };
 
 /**
- * Détecte le type de section basé sur le contenu du texte
+ * Detects section type based on text content
  */
 function detectSectionType(text: string, fontSize: number, fontWeight: string): { type: string; isTitle: boolean } {
   const normalizedText = text.toLowerCase().trim();
   const isLargeAndBold = fontSize > 14 && fontWeight === 'bold';
   const isVeryLarge = fontSize > 20;
 
-  // Nom du candidat (très grand texte en haut)
+  // Candidate name (very large text at the top)
   if (isVeryLarge) {
     return { type: 'HEADER', isTitle: true };
   }
 
-  // Titres de sections
+  // Section titles
   if (isLargeAndBold && text.length < 60) {
     if (/exp[ée]rience|work|emploi|career|professionnel/i.test(normalizedText)) {
       return { type: 'EXPERIENCE', isTitle: true };
@@ -120,7 +120,7 @@ function detectSectionType(text: string, fontSize: number, fontWeight: string): 
 }
 
 /**
- * Extrait tous les blocs de texte d'un node Figma
+ * Extracts all text blocks from Figma nodes
  */
 async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock[]> {
   const textBlocks: TextBlock[] = [];
@@ -130,7 +130,7 @@ async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock
       const textNode = node as TextNode;
 
       try {
-        // Charger la police
+        // Load the font
         if (textNode.fontName !== figma.mixed) {
           await figma.loadFontAsync(textNode.fontName as FontName);
         } else {
@@ -138,7 +138,7 @@ async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock
           await figma.loadFontAsync(firstFont);
         }
 
-        // Extraire propriétés
+        // Extract properties
         const fontSize = typeof textNode.fontSize === 'number' ? textNode.fontSize : 12;
         const fontWeight = typeof textNode.fontWeight === 'number' ?
           (textNode.fontWeight >= 600 ? 'bold' : 'normal') : 'normal';
@@ -162,7 +162,7 @@ async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock
           }
         }
 
-        // Détecter le type de section
+        // Detect section type
         const { type: sectionType, isTitle } = detectSectionType(
           textNode.characters,
           fontSize,
@@ -183,7 +183,7 @@ async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock
           isTitle: isTitle
         });
       } catch (error) {
-        console.warn(`Erreur texte "${textNode.characters}":`, error);
+        console.warn(`Text error "${textNode.characters}":`, error);
       }
     }
 
@@ -198,7 +198,7 @@ async function extractTextBlocks(nodes: readonly SceneNode[]): Promise<TextBlock
     await traverse(node);
   }
 
-  // Trier par position (haut → bas, gauche → droite)
+  // Sort by position (top → bottom, left → right)
   textBlocks.sort((a, b) => {
     const yDiff = a.y - b.y;
     if (Math.abs(yDiff) > 5) return yDiff;
