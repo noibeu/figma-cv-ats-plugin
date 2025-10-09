@@ -65,18 +65,25 @@
       margin-bottom: 4px;
       color: #000000;
     }
+
+    .file-type {
+      margin-top: 4px;
+      padding-left: 10px;
+      font-size: 10px;
+      color: #666;
+    }
   </style>
 </head>
 <body>
-  <h2>Export ATS-compliant PDF</h2>
+  <h2>Export 2 ATS-compliant PDFs</h2>
 
   <div class="info">
-    <strong>📋 2-page PDF:</strong>
-    Page 1: Perfect visual design<br>
-    Page 2: Structured text for ATS
+    <strong>📋 2 files will be generated:</strong>
+    <div class="file-type">• <b>cv-name-visual.pdf</b> - PNG image + invisible text</div>
+    <div class="file-type">• <b>cv-name-ats.pdf</b> - Structured text only</div>
   </div>
 
-  <button id="export-btn">Export as ATS PDF</button>
+  <button id="export-btn">Export as 2 PDFs</button>
 
   <script>
     const exportBtn = document.getElementById('export-btn');
@@ -91,13 +98,285 @@
       }, '*');
     });
 
-    // Receive data and generate PDF
+    // Text cleaning function
+    function cleanText(text) {
+      return text
+        .replace(/[\u2028\u2029]/g, ' ')
+        .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+        .replace(/[\u2018\u2019]/g, "'")
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2013\u2014]/g, '-')
+        .replace(/\u2026/g, '...')
+        .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    // Optimize reading order (columns)
+    function optimizeReadingOrder(blocks, frameWidth) {
+      const midX = frameWidth / 2;
+      const leftCol = blocks.filter(b => b.x < midX);
+      const rightCol = blocks.filter(b => b.x >= midX);
+
+      if (leftCol.length > 0 && rightCol.length > 0) {
+        const sortedLeft = leftCol.sort((a, b) => a.y - b.y);
+        const sortedRight = rightCol.sort((a, b) => a.y - b.y);
+        return [...sortedLeft, ...sortedRight];
+      }
+
+      return blocks.sort((a, b) => {
+        const yDiff = a.y - b.y;
+        return Math.abs(yDiff) > 5 ? yDiff : a.x - b.x;
+      });
+    }
+
+    // Group by sections
+    function groupBySections(blocks) {
+      const sections = [];
+      let currentSection = { type: 'HEADER', title: null, texts: [] };
+
+      for (const block of blocks) {
+        if (block.isTitle) {
+          if (currentSection.texts.length > 0 || currentSection.title) {
+            sections.push(currentSection);
+          }
+          currentSection = {
+            type: block.sectionType || 'OTHER',
+            title: cleanText(block.text),
+            texts: []
+          };
+        } else {
+          currentSection.texts.push(cleanText(block.text));
+        }
+      }
+
+      if (currentSection.texts.length > 0 || currentSection.title) {
+        sections.push(currentSection);
+      }
+
+      return sections;
+    }
+
+    // Draw text with word wrap
+    function drawTextWithWrap(page, text, x, startY, maxWidth, fontSize, font, color) {
+      const { rgb } = PDFLib;
+      const words = text.split(' ');
+      let line = '';
+      let currentY = startY;
+      const lineHeight = fontSize * 1.4;
+
+      for (const word of words) {
+        const testLine = line + word + ' ';
+        const lineWidth = font.widthOfTextAtSize(testLine, fontSize);
+
+        if (lineWidth > maxWidth && line !== '') {
+          page.drawText(line.trim(), {
+            x: x,
+            y: currentY,
+            size: fontSize,
+            font: font,
+            color: color || rgb(0, 0, 0)
+          });
+          currentY -= lineHeight;
+          line = word + ' ';
+        } else {
+          line = testLine;
+        }
+      }
+
+      if (line.trim()) {
+        page.drawText(line.trim(), {
+          x: x,
+          y: currentY,
+          size: fontSize,
+          font: font,
+          color: color || rgb(0, 0, 0)
+        });
+        currentY -= lineHeight;
+      }
+
+      return currentY;
+    }
+
+    // PDF 1: VISUAL ATS (PNG image + invisible text)
+    async function generateVisualATSPDF(pngBytesArray, frameWidth, frameHeight, textBlocks, candidateName) {
+      const { PDFDocument, rgb, StandardFonts } = PDFLib;
+      const pdfDoc = await PDFDocument.create();
+
+      const page = pdfDoc.addPage([595, 842]);
+      const { width: pageWidth, height: pageHeight } = page.getSize();
+
+      // Embed PNG image
+      const pngImage = await pdfDoc.embedPng(pngBytesArray);
+      const pngDims = pngImage.scale(1);
+
+      const margin = 40;
+      const availableWidth = pageWidth - 2 * margin;
+      const availableHeight = pageHeight - 2 * margin;
+
+      const scale = Math.min(
+        availableWidth / pngDims.width,
+        availableHeight / pngDims.height
+      );
+
+      const scaledWidth = pngDims.width * scale;
+      const scaledHeight = pngDims.height * scale;
+
+      const imageX = (pageWidth - scaledWidth) / 2;
+      const imageY = (pageHeight - scaledHeight) / 2;
+
+      // Draw PNG image
+      page.drawImage(pngImage, {
+        x: imageX,
+        y: imageY,
+        width: scaledWidth,
+        height: scaledHeight
+      });
+
+      // Add invisible text on top of image for ATS
+      if (textBlocks && textBlocks.length > 0) {
+        const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const helveticaBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+        let minX = Infinity, minY = Infinity;
+        textBlocks.forEach(block => {
+          minX = Math.min(minX, block.x);
+          minY = Math.min(minY, block.y);
+        });
+
+        for (const block of textBlocks) {
+          if (!block.text || block.text.trim().length === 0) continue;
+
+          const cleanedText = cleanText(block.text);
+          if (!cleanedText) continue;
+
+          const relX = (block.x - minX) / frameWidth;
+          const relY = (block.y - minY) / frameHeight;
+
+          const textX = imageX + relX * scaledWidth;
+          const textY = imageY + scaledHeight - (relY * scaledHeight);
+
+          const fontSize = Math.max(6, (block.fontSize / frameHeight) * scaledHeight);
+          const font = block.fontWeight === 'bold' ? helveticaBoldFont : helveticaFont;
+
+          // Draw INVISIBLE text (opacity: 0)
+          page.drawText(cleanedText, {
+            x: textX,
+            y: textY,
+            size: fontSize,
+            font: font,
+            color: rgb(0, 0, 0),
+            opacity: 0 // INVISIBLE but selectable
+          });
+        }
+      }
+
+      // Metadata
+      pdfDoc.setTitle(`CV - ${candidateName} (Visual)`);
+      pdfDoc.setAuthor(candidateName);
+      pdfDoc.setSubject('Curriculum Vitae - Visual ATS');
+      pdfDoc.setKeywords(['CV', 'Resume', 'ATS', 'Visual', candidateName]);
+      pdfDoc.setProducer('Figma ATS Export Plugin v2.0');
+      pdfDoc.setCreator('Figma ATS Plugin');
+      pdfDoc.setCreationDate(new Date());
+
+      console.log('✅ Visual ATS PDF created (image + invisible text)');
+      return await pdfDoc.save();
+    }
+
+    // PDF 2: PURE ATS (structured text only)
+    async function generatePureATSPDF(frameWidth, textBlocks, candidateName) {
+      const { PDFDocument, rgb, StandardFonts } = PDFLib;
+      const pdfDoc = await PDFDocument.create();
+
+      const page = pdfDoc.addPage([595, 842]);
+      const { width: pageWidth, height: pageHeight } = page.getSize();
+
+      const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const helveticaBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+      const orderedBlocks = optimizeReadingOrder(textBlocks, frameWidth);
+      const sections = groupBySections(orderedBlocks);
+
+      let currentY = pageHeight - 60;
+      const marginX = 50;
+      const maxWidth = pageWidth - 2 * marginX;
+
+      for (const section of sections) {
+        // Section title (BOLD, UPPERCASE)
+        if (section.title) {
+          const titleSize = section.type === 'HEADER' ? 18 : 14;
+
+          page.drawText(section.title.toUpperCase(), {
+            x: marginX,
+            y: currentY,
+            size: titleSize,
+            font: helveticaBoldFont,
+            color: rgb(0, 0, 0)
+          });
+          currentY -= titleSize * 1.8;
+        }
+
+        // Section texts
+        for (const text of section.texts) {
+          if (!text) continue;
+
+          currentY = drawTextWithWrap(
+            page,
+            text,
+            marginX,
+            currentY,
+            maxWidth,
+            11,
+            helveticaFont,
+            rgb(0, 0, 0)
+          );
+
+          currentY -= 5;
+        }
+
+        currentY -= 15;
+
+        // New page if necessary
+        if (currentY < 80) {
+          const newPage = pdfDoc.addPage([595, 842]);
+          currentY = pageHeight - 60;
+        }
+      }
+
+      // Metadata
+      pdfDoc.setTitle(`CV - ${candidateName} (ATS)`);
+      pdfDoc.setAuthor(candidateName);
+      pdfDoc.setSubject('Curriculum Vitae - ATS Optimized');
+      pdfDoc.setKeywords(['CV', 'Resume', 'ATS', 'Text', candidateName]);
+      pdfDoc.setProducer('Figma ATS Export Plugin v2.0');
+      pdfDoc.setCreator('Figma ATS Plugin');
+      pdfDoc.setCreationDate(new Date());
+
+      console.log(`✅ Pure ATS PDF created: ${sections.length} sections`);
+      return await pdfDoc.save();
+    }
+
+    // Download function
+    function downloadPDF(pdfBytes, fileName) {
+      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    // Receive data and generate PDFs
     window.onmessage = async (event) => {
       const msg = event.data.pluginMessage;
 
       if (msg.type === 'generate-pdf') {
         try {
-          exportBtn.textContent = 'Generating PDF...';
+          exportBtn.textContent = 'Generating PDFs...';
 
           const { pngBytes, frameWidth, frameHeight, textBlocks } = msg.data;
 
@@ -110,265 +389,53 @@
             throw new Error('Missing PNG image');
           }
 
-          // Convert Array to Uint8Array
           const pngBytesArray = new Uint8Array(pngBytes);
 
-          // Create PDF with pdf-lib
-          const { PDFDocument, rgb, StandardFonts } = PDFLib;
-          const pdfDoc = await PDFDocument.create();
-
-          // A4 format: 595 x 842 points
-          const page = pdfDoc.addPage([595, 842]);
-          const { width: pageWidth, height: pageHeight } = page.getSize();
-
-          // 1. EMBED PNG IMAGE (exact visual rendering)
-          const pngImage = await pdfDoc.embedPng(pngBytesArray);
-          const pngDims = pngImage.scale(1);
-
-          // Calculate scale to fit image in A4 page with margins
-          const margin = 40;
-          const availableWidth = pageWidth - 2 * margin;
-          const availableHeight = pageHeight - 2 * margin;
-
-          const scale = Math.min(
-            availableWidth / pngDims.width,
-            availableHeight / pngDims.height
-          );
-
-          const scaledWidth = pngDims.width * scale;
-          const scaledHeight = pngDims.height * scale;
-
-          // Center image on page
-          const imageX = (pageWidth - scaledWidth) / 2;
-          const imageY = (pageHeight - scaledHeight) / 2;
-
-          // Draw PNG image
-          page.drawImage(pngImage, {
-            x: imageX,
-            y: imageY,
-            width: scaledWidth,
-            height: scaledHeight
-          });
-
-          console.log('✅ Page 1 (PNG Image) created:', {
-            original: `${pngDims.width}x${pngDims.height}`,
-            scaled: `${scaledWidth.toFixed(0)}x${scaledHeight.toFixed(0)}`,
-            scale: scale.toFixed(3),
-            position: `(${imageX.toFixed(0)}, ${imageY.toFixed(0)})`
-          });
-
-          // 2. CREATE PAGE 2: STRUCTURED TEXT FOR ATS
-          if (textBlocks && textBlocks.length > 0) {
-            const page2 = pdfDoc.addPage([595, 842]);
-            const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
-            const helveticaBoldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-            // Text cleaning function
-            function cleanText(text) {
-              return text
-                .replace(/[\u2028\u2029]/g, ' ')
-                .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
-                .replace(/[\u2018\u2019]/g, "'")
-                .replace(/[\u201C\u201D]/g, '"')
-                .replace(/[\u2013\u2014]/g, '-')
-                .replace(/\u2026/g, '...')
-                .replace(/[\u0000-\u001F\u007F-\u009F]/g, '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            }
-
-            // Optimize reading order (columns)
-            function optimizeReadingOrder(blocks) {
-              // Detect if 2-column layout
-              const midX = frameWidth / 2;
-              const leftCol = blocks.filter(b => b.x < midX);
-              const rightCol = blocks.filter(b => b.x >= midX);
-
-              if (leftCol.length > 0 && rightCol.length > 0) {
-                // 2 columns: read left then right
-                const sortedLeft = leftCol.sort((a, b) => a.y - b.y);
-                const sortedRight = rightCol.sort((a, b) => a.y - b.y);
-                return [...sortedLeft, ...sortedRight];
-              }
-
-              // 1 column: top → bottom
-              return blocks.sort((a, b) => {
-                const yDiff = a.y - b.y;
-                return Math.abs(yDiff) > 5 ? yDiff : a.x - b.x;
-              });
-            }
-
-            // Group by sections
-            function groupBySections(blocks) {
-              const sections = [];
-              let currentSection = { type: 'HEADER', title: null, texts: [] };
-
-              for (const block of blocks) {
-                if (block.isTitle) {
-                  // Save previous section
-                  if (currentSection.texts.length > 0 || currentSection.title) {
-                    sections.push(currentSection);
-                  }
-                  // New section
-                  currentSection = {
-                    type: block.sectionType || 'OTHER',
-                    title: cleanText(block.text),
-                    texts: []
-                  };
-                } else {
-                  currentSection.texts.push(cleanText(block.text));
-                }
-              }
-
-              // Add last section
-              if (currentSection.texts.length > 0 || currentSection.title) {
-                sections.push(currentSection);
-              }
-
-              return sections;
-            }
-
-            // Draw text with word wrap
-            function drawTextWithWrap(page, text, x, startY, maxWidth, fontSize, font) {
-              const words = text.split(' ');
-              let line = '';
-              let currentY = startY;
-              const lineHeight = fontSize * 1.4;
-
-              for (const word of words) {
-                const testLine = line + word + ' ';
-                const lineWidth = font.widthOfTextAtSize(testLine, fontSize);
-
-                if (lineWidth > maxWidth && line !== '') {
-                  // Line full
-                  page.drawText(line.trim(), {
-                    x: x,
-                    y: currentY,
-                    size: fontSize,
-                    font: font,
-                    color: rgb(0, 0, 0)
-                  });
-                  currentY -= lineHeight;
-                  line = word + ' ';
-                } else {
-                  line = testLine;
-                }
-              }
-
-              // Last line
-              if (line.trim()) {
-                page.drawText(line.trim(), {
-                  x: x,
-                  y: currentY,
-                  size: fontSize,
-                  font: font,
-                  color: rgb(0, 0, 0)
-                });
-                currentY -= lineHeight;
-              }
-
-              return currentY;
-            }
-
-            // Generate page 2 content
-            const orderedBlocks = optimizeReadingOrder(textBlocks);
-            const sections = groupBySections(orderedBlocks);
-
-            let currentY = pageHeight - 60;
-            const marginX = 50;
-            const maxWidth = pageWidth - 2 * marginX;
-
-            for (const section of sections) {
-              // Section title (BOLD, UPPERCASE)
-              if (section.title) {
-                const titleSize = section.type === 'HEADER' ? 18 : 14;
-
-                page2.drawText(section.title.toUpperCase(), {
-                  x: marginX,
-                  y: currentY,
-                  size: titleSize,
-                  font: helveticaBoldFont,
-                  color: rgb(0, 0, 0)
-                });
-                currentY -= titleSize * 1.8;
-              }
-
-              // Section texts
-              for (const text of section.texts) {
-                if (!text) continue;
-
-                currentY = drawTextWithWrap(
-                  page2,
-                  text,
-                  marginX,
-                  currentY,
-                  maxWidth,
-                  11,
-                  helveticaFont
-                );
-
-                currentY -= 5; // Spacing between paragraphs
-              }
-
-              currentY -= 15; // Spacing between sections
-
-              // New page if necessary
-              if (currentY < 80) {
-                const newPage = pdfDoc.addPage([595, 842]);
-                currentY = pageHeight - 60;
-              }
-            }
-
-            console.log(`✅ Page 2 (ATS Text) created: ${sections.length} sections detected`);
-          }
-
-          // 3. ATS-FRIENDLY METADATA
-          // Extract candidate name (first text with fontSize > 20)
-          let candidateName = 'CV';
+          // Extract candidate name
+          let candidateName = 'resume';
           const headerBlock = textBlocks.find(b => b.fontSize > 20);
           if (headerBlock) {
-            candidateName = headerBlock.text.trim();
+            candidateName = headerBlock.text.trim().toLowerCase().replace(/\s+/g, '-');
           }
 
-          pdfDoc.setTitle(`CV - ${candidateName}`);
-          pdfDoc.setAuthor(candidateName);
-          pdfDoc.setSubject('Curriculum Vitae - ATS Optimized');
-          pdfDoc.setKeywords(['CV', 'Resume', 'Curriculum Vitae', 'ATS', 'Application', candidateName]);
-          pdfDoc.setProducer('Figma ATS Export Plugin v2.0');
-          pdfDoc.setCreator('Figma ATS Plugin');
-          pdfDoc.setCreationDate(new Date());
+          // Generate BOTH PDFs
+          exportBtn.textContent = 'Creating Visual PDF...';
+          const visualPDF = await generateVisualATSPDF(
+            pngBytesArray,
+            frameWidth,
+            frameHeight,
+            textBlocks,
+            candidateName
+          );
 
-          console.log(`✅ Metadata: CV of ${candidateName}`);
+          exportBtn.textContent = 'Creating ATS PDF...';
+          const atsPDF = await generatePureATSPDF(
+            frameWidth,
+            textBlocks,
+            candidateName
+          );
 
-          // 4. SAVE AND DOWNLOAD
-          const pdfBytes = await pdfDoc.save();
+          // Download both files
+          exportBtn.textContent = 'Downloading...';
+          downloadPDF(visualPDF, `cv-${candidateName}-visual.pdf`);
 
-          const blob = new Blob([pdfBytes], { type: 'application/pdf' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
+          // Small delay to avoid browser blocking
+          await new Promise(resolve => setTimeout(resolve, 500));
 
-          // File name based on candidate name
-          const fileName = `cv-${candidateName.toLowerCase().replace(/\s+/g, '-')}.pdf`;
-          a.download = fileName;
+          downloadPDF(atsPDF, `cv-${candidateName}-ats.pdf`);
 
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-
-          console.log(`✅ PDF "${fileName}" downloaded successfully`);
-          console.log('📄 Page 1: Visual design (PNG image)');
-          console.log('📄 Page 2: Structured text for ATS');
+          console.log('✅ Both PDFs downloaded successfully');
+          console.log(`📄 cv-${candidateName}-visual.pdf - PNG + invisible text`);
+          console.log(`📄 cv-${candidateName}-ats.pdf - Structured text only`);
 
           // Re-enable button
           exportBtn.disabled = false;
-          exportBtn.textContent = 'Export as ATS PDF';
+          exportBtn.textContent = 'Export as 2 PDFs';
         } catch (error) {
           console.error('❌ PDF error:', error);
           alert('Error: ' + error.message);
           exportBtn.disabled = false;
-          exportBtn.textContent = 'Export as ATS PDF';
+          exportBtn.textContent = 'Export as 2 PDFs';
         }
       }
     };
